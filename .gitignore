@@ -1,0 +1,12 @@
+node_modules/
+venv/
+__pycache__/
+dist/
+dist-ssr/
+*.log
+.DS_Store
+uploads/*
+!uploads/.gitkeep
+.env
+.env.*
+!.env.example
