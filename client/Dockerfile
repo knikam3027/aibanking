@@ -13,7 +13,7 @@ FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker-entrypoint-wrapper.sh /docker-entrypoint-wrapper.sh
-RUN chmod +x /docker-entrypoint-wrapper.sh
+RUN sed -i 's/\r$//' /docker-entrypoint-wrapper.sh && chmod +x /docker-entrypoint-wrapper.sh
 
 EXPOSE 80 443
 
