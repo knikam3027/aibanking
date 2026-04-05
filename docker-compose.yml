@@ -6,7 +6,8 @@ services:
     ports:
       - "5000:5000"
     env_file:
-      - ./server/.env
+      - path: ./server/.env
+        required: false
     environment:
       - AI_SERVICE_URL=http://ai-service:8000
     depends_on:
@@ -19,7 +20,8 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - ./ai-service/.env
+      - path: ./ai-service/.env
+        required: false
 
   client:
     build: ./client
