@@ -1,4 +1,8 @@
-# HTTP — redirect to HTTPS (except ACME challenge)
+#!/bin/sh
+# If SSL certs don't exist yet, fall back to HTTP-only config
+if [ ! -f /etc/letsencrypt/live/cbamoon.com/fullchain.pem ]; then
+  echo "SSL certificates not found — starting in HTTP-only mode"
+  cat > /etc/nginx/conf.d/default.conf << 'EOF'
 server {
     listen 80;
     server_name cbamoon.com www.cbamoon.com;
@@ -6,23 +10,6 @@ server {
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
-
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-# HTTPS
-server {
-    listen 443 ssl;
-    server_name cbamoon.com www.cbamoon.com;
-
-    ssl_certificate     /etc/letsencrypt/live/cbamoon.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/cbamoon.com/privkey.pem;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
 
     root /usr/share/nginx/html;
     index index.html;
@@ -43,3 +30,7 @@ server {
         try_files $uri $uri/ /index.html;
     }
 }
+EOF
+fi
+
+exec nginx -g 'daemon off;'
