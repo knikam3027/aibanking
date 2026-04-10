@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Account = require('../models/Account');
 const Transaction = require('../models/Transaction');
 const Alert = require('../models/Alert');
+const PostTransferVerification = require('../models/PostTransferVerification');
 
 // Get admin dashboard stats
 exports.getDashboardStats = async (req, res) => {
@@ -265,6 +266,115 @@ exports.getBankBalance = async (req, res) => {
   try {
     const adminAccount = await Account.findOne({ userId: req.userId });
     res.json({ balance: adminAccount ? adminAccount.balance : 0 });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error.', error: error.message });
+  }
+};
+
+// Get all held accounts
+exports.getHeldAccounts = async (req, res) => {
+  try {
+    const heldAccounts = await Account.find({ isHeld: true }).populate('userId', 'name email phone');
+    const results = [];
+
+    for (const acc of heldAccounts) {
+      // Get the verification that triggered the hold
+      let verification = null;
+      if (acc.heldByVerificationId) {
+        verification = await PostTransferVerification.findById(acc.heldByVerificationId);
+      }
+
+      results.push({
+        _id: acc._id,
+        accountNumber: acc.accountNumber,
+        balance: acc.balance,
+        isHeld: acc.isHeld,
+        heldAt: acc.heldAt,
+        heldReason: acc.heldReason,
+        user: acc.userId ? {
+          _id: acc.userId._id,
+          name: acc.userId.name,
+          email: acc.userId.email,
+          phone: acc.userId.phone,
+        } : null,
+        verification: verification ? {
+          _id: verification._id,
+          amount: verification.amount,
+          receiverAccount: verification.receiverAccount,
+          beneficiaryName: verification.beneficiaryName,
+          status: verification.status,
+          createdAt: verification.createdAt,
+        } : null,
+      });
+    }
+
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error.', error: error.message });
+  }
+};
+
+// Unhold an account (admin action after review)
+exports.unholdAccount = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const { action, notes } = req.body; // action: 'unhold' or 'reverse_transaction'
+
+    const account = await Account.findById(accountId);
+    if (!account) return res.status(404).json({ message: 'Account not found.' });
+    if (!account.isHeld) return res.json({ message: 'Account is not held.' });
+
+    const user = await User.findById(account.userId);
+
+    if (action === 'reverse_transaction' && account.heldByVerificationId) {
+      // Reverse the suspicious transaction
+      const verification = await PostTransferVerification.findById(account.heldByVerificationId);
+      if (verification) {
+        // Refund the amount back to sender
+        account.balance += verification.amount;
+
+        // Try to debit receiver if internal
+        const receiverAcc = await Account.findOne({ accountNumber: verification.receiverAccount });
+        if (receiverAcc && receiverAcc.balance >= verification.amount) {
+          receiverAcc.balance -= verification.amount;
+          await receiverAcc.save();
+        }
+
+        // Record reversal transaction
+        await Transaction.create({
+          userId: account.userId,
+          type: 'credit',
+          amount: verification.amount,
+          category: 'Reversal',
+          sender: 'Bank Admin',
+          description: `[REVERSED] Suspicious transfer of ₹${verification.amount.toLocaleString('en-IN')} reversed by admin. ${notes || ''}`,
+          status: 'success',
+        });
+
+        verification.status = 'failed';
+        await verification.save();
+      }
+    }
+
+    // Unhold the account
+    account.isHeld = false;
+    account.heldAt = null;
+    account.heldReason = null;
+    account.heldByVerificationId = null;
+    await account.save();
+
+    // Create alert
+    await Alert.create({
+      userId: account.userId,
+      type: 'info',
+      message: `✅ Your account has been reviewed and ${action === 'reverse_transaction' ? 'the suspicious transaction was reversed' : 'cleared'}. Your account is now active.${notes ? ' Admin notes: ' + notes : ''}`,
+      severity: 'low',
+    });
+
+    res.json({
+      message: `Account ${account.accountNumber} (${user?.name || 'Unknown'}) has been unholded.${action === 'reverse_transaction' ? ' Transaction reversed.' : ''}`,
+      newBalance: account.balance,
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server error.', error: error.message });
   }

@@ -7,6 +7,8 @@ dist-ssr/
 .DS_Store
 uploads/*
 !uploads/.gitkeep
+
+# Environment files (contain secrets)
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local

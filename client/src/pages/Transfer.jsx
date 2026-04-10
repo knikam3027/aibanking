@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { transferMoney, transferWithVoice, getPendingTransferStatus, simulateVoiceResponse } from '../services/api';
-import { FiSend, FiCheckCircle, FiAlertTriangle, FiInfo, FiPhone, FiPhoneCall, FiShield, FiXCircle } from 'react-icons/fi';
+import { transferMoney, transferWithVoice, getPendingTransferStatus, simulateVoiceResponse, getVerificationStatus, simulateVerification } from '../services/api';
+import { FiSend, FiCheckCircle, FiAlertTriangle, FiInfo, FiPhone, FiPhoneCall, FiShield, FiXCircle, FiLock } from 'react-icons/fi';
 
 const BANK_MAP = {
   SBIN: 'State Bank of India', HDFC: 'HDFC Bank', ICIC: 'ICICI Bank',
@@ -45,6 +45,10 @@ export default function Transfer() {
   const [voiceState, setVoiceState] = useState(null); // { pendingId, status, ... }
   const pollRef = useRef(null);
 
+  // Post-transfer verification state (for > ₹1 lakh)
+  const [postVerify, setPostVerify] = useState(null); // { verificationId, status, ... }
+  const postVerifyPollRef = useRef(null);
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     setForm({ ...form, [name]: name === 'ifsc' ? value.toUpperCase() : value });
@@ -70,6 +74,22 @@ export default function Transfer() {
     }
   }, [voiceState?.pendingId, voiceState?.status]);
 
+  // Poll for post-transfer verification status (>₹1L)
+  useEffect(() => {
+    if (postVerify?.verificationId && ['pending', 'calling'].includes(postVerify.status)) {
+      postVerifyPollRef.current = setInterval(async () => {
+        try {
+          const { data } = await getVerificationStatus(postVerify.verificationId);
+          setPostVerify(prev => ({ ...prev, ...data }));
+          if (!['pending', 'calling'].includes(data.status)) {
+            clearInterval(postVerifyPollRef.current);
+          }
+        } catch { /* ignore */ }
+      }, 3000);
+      return () => clearInterval(postVerifyPollRef.current);
+    }
+  }, [postVerify?.verificationId, postVerify?.status]);
+
   const validate = () => {
     if (!form.receiverAccount || !form.amount || Number(form.amount) <= 0) {
       setError('Please fill in valid account number and amount.');
@@ -89,7 +109,7 @@ export default function Transfer() {
   // Normal transfer
   const handleNormalTransfer = async (e) => {
     e.preventDefault();
-    setError(''); setResult(null); setVoiceState(null);
+    setError(''); setResult(null); setVoiceState(null); setPostVerify(null);
     if (!validate()) return;
 
     setLoading(true);
@@ -108,8 +128,20 @@ export default function Transfer() {
       const { data } = await transferMoney(payload);
       setResult({ ...data, beneficiaryName: form.beneficiaryName, ifsc: form.ifsc, bankName: ifscInfo?.bank });
       resetForm();
+
+      // If verification required (>₹1L), set up post-transfer verification
+      if (data.verificationId) {
+        setPostVerify({
+          verificationId: data.verificationId,
+          status: 'pending',
+          amount: Number(form.amount),
+          beneficiaryName: form.beneficiaryName,
+        });
+      }
     } catch (err) {
-      if (err.response?.data?.fraud) {
+      if (err.response?.data?.held) {
+        setError(`🔒 ${err.response.data.message}`);
+      } else if (err.response?.data?.fraud) {
         setError(`🚨 Transaction blocked: ${err.response.data.reason}`);
       } else {
         setError(err.response?.data?.message || 'Transfer failed.');
@@ -165,6 +197,17 @@ export default function Transfer() {
     }
   };
 
+  // Simulate post-transfer verification response (AWS Connect test mode)
+  const handlePostVerifySimulate = async (digit) => {
+    if (!postVerify?.verificationId) return;
+    try {
+      const { data } = await simulateVerification(postVerify.verificationId, digit);
+      setPostVerify(prev => ({ ...prev, ...data }));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Simulation failed.');
+    }
+  };
+
   const resetForm = () => {
     setForm({ receiverAccount: '', ifsc: '', beneficiaryName: '', amount: '', category: 'Transfer', description: '', phoneNumber: form.phoneNumber });
   };
@@ -172,6 +215,7 @@ export default function Transfer() {
   const resetAll = () => {
     resetForm();
     setVoiceState(null);
+    setPostVerify(null);
     setResult(null);
     setError('');
   };
@@ -240,6 +284,74 @@ export default function Transfer() {
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Post-Transfer Verification (> ₹1 Lakh) — AWS Connect */}
+      {postVerify && (
+        <div className={`rounded-xl border-2 p-5 space-y-4 ${
+          postVerify.status === 'confirmed' ? 'bg-green-50 border-green-300' :
+          postVerify.status === 'suspicious' ? 'bg-red-50 border-red-300' :
+          'bg-amber-50 border-amber-300'
+        }`}>
+          <div className="flex items-start gap-3">
+            {postVerify.status === 'suspicious' ? (
+              <FiLock className="text-red-600 mt-0.5" size={22} />
+            ) : postVerify.status === 'confirmed' ? (
+              <FiCheckCircle className="text-green-600 mt-0.5" size={22} />
+            ) : (
+              <FiPhone className="text-amber-600 mt-0.5 animate-bounce" size={22} />
+            )}
+            <div className="flex-1">
+              <p className="font-semibold text-sm">
+                {postVerify.status === 'confirmed' && '✅ Transfer Verified — Confirmed by you'}
+                {postVerify.status === 'suspicious' && '🚨 Account Held — Transaction reported suspicious'}
+                {postVerify.status === 'no_response' && '⏰ No response — Account held for review'}
+                {['pending', 'calling'].includes(postVerify.status) && '📞 Verification Call — Answer to confirm'}
+              </p>
+              <p className="text-xs text-gray-600 mt-1">
+                High-value transfer (&gt; ₹1,00,000) requires voice confirmation via AWS Connect.
+              </p>
+              {postVerify.status === 'suspicious' && (
+                <p className="text-xs text-red-700 mt-2 font-medium">
+                  Your account has been temporarily frozen. Admin will review and unhold your account.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Calling animation */}
+          {['pending', 'calling'].includes(postVerify.status) && (
+            <div className="flex items-center gap-3 bg-white/60 rounded-lg p-3">
+              <div className="relative">
+                <FiPhone className="text-amber-600 animate-bounce" size={20} />
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full animate-ping" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-800">
+                  {postVerify.status === 'pending' ? 'Connecting AWS Connect...' : 'Calling your phone — Answer to verify'}
+                </p>
+                <p className="text-xs text-gray-500">Press 1 to confirm | Press 2 to report suspicious</p>
+              </div>
+            </div>
+          )}
+
+          {/* Test simulation controls */}
+          {['pending', 'calling'].includes(postVerify.status) && (
+            <div className="border-t border-dashed border-amber-300 pt-3">
+              <p className="text-xs text-gray-500 mb-2 font-medium">🧪 Test Mode — Simulate verification response:</p>
+              <div className="flex gap-2">
+                <button onClick={() => handlePostVerifySimulate(1)}
+                  className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition flex items-center justify-center gap-1.5 cursor-pointer">
+                  <FiCheckCircle size={14} /> Press 1 — Confirm
+                </button>
+                <button onClick={() => handlePostVerifySimulate(2)}
+                  className="flex-1 bg-red-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition flex items-center justify-center gap-1.5 cursor-pointer">
+                  <FiXCircle size={14} /> Press 2 — Suspicious
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

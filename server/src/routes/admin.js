@@ -14,5 +14,7 @@ router.get('/bank-balance', adminController.getBankBalance);
 router.post('/add-balance', adminController.addBalance);
 router.post('/add-balance-bulk', adminController.addBalanceBulk);
 router.post('/withdraw-to-account', aiController.adminWithdrawToUser);
+router.get('/held-accounts', adminController.getHeldAccounts);
+router.post('/held-accounts/:accountId/unhold', adminController.unholdAccount);
 
 module.exports = router;

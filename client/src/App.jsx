@@ -15,6 +15,7 @@ import AdminDashboard from './pages/AdminDashboard';
 import AdminUsers from './pages/AdminUsers';
 import AdminPayroll from './pages/AdminPayroll';
 import AdminWithdraw from './pages/AdminWithdraw';
+import AdminHeldAccounts from './pages/AdminHeldAccounts';
 
 function ProtectedLayout({ children }) {
   return (
@@ -50,6 +51,7 @@ function App() {
           <Route path="/admin/users" element={<AdminLayout><AdminUsers /></AdminLayout>} />
           <Route path="/admin/payroll" element={<AdminLayout><AdminPayroll /></AdminLayout>} />
           <Route path="/admin/withdraw" element={<AdminLayout><AdminWithdraw /></AdminLayout>} />
+          <Route path="/admin/held-accounts" element={<AdminLayout><AdminHeldAccounts /></AdminLayout>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>

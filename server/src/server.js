@@ -13,6 +13,7 @@ const alertRoutes = require('./routes/alert');
 const adminRoutes = require('./routes/admin');
 const payrollRoutes = require('./routes/payroll');
 const exotelRoutes = require('./routes/exotel');
+const connectRoutes = require('./routes/connect');
 
 const app = express();
 
@@ -35,6 +36,7 @@ app.use('/api/alerts', alertRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/payroll', payrollRoutes);
 app.use('/api/exotel', exotelRoutes); // Public Exotel callback routes (no auth)
+app.use('/api/connect', connectRoutes); // AWS Connect verification routes
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -39,6 +39,10 @@ export const transferWithVoice = (data) => API.post('/transactions/transfer-voic
 export const getPendingTransferStatus = (id) => API.get(`/transactions/pending/${id}`);
 export const simulateVoiceResponse = (id, digit) => API.post(`/exotel/simulate/${id}`, { digit });
 
+// AWS Connect Post-Transfer Verification
+export const getVerificationStatus = (id) => API.get(`/connect/verification/${id}`);
+export const simulateVerification = (id, digit) => API.post(`/connect/verification/${id}/simulate`, { digit });
+
 // Loans
 export const checkLoanEligibility = (data) => API.post('/loans/check-eligibility', data);
 export const applyLoan = (data) => API.post('/loans/apply', data);
@@ -63,6 +67,8 @@ export const getAdminBankBalance = () => API.get('/admin/bank-balance');
 export const adminAddBalance = (data) => API.post('/admin/add-balance', data);
 export const adminAddBalanceBulk = (data) => API.post('/admin/add-balance-bulk', data);
 export const adminWithdrawToAccount = (data) => API.post('/admin/withdraw-to-account', data);
+export const adminGetHeldAccounts = () => API.get('/admin/held-accounts');
+export const adminUnholdAccount = (accountId, data) => API.post(`/admin/held-accounts/${accountId}/unhold`, data);
 
 // Admin Payroll
 export const uploadSalaryPdf = (formData) => API.post('/admin/payroll/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });

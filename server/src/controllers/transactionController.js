@@ -3,8 +3,10 @@ const Account = require('../models/Account');
 const Alert = require('../models/Alert');
 const User = require('../models/User');
 const PendingTransfer = require('../models/PendingTransfer');
+const PostTransferVerification = require('../models/PostTransferVerification');
 const axios = require('axios');
 const { makeVerificationCall, getCallStatus, assessTransferRisk } = require('../services/exotelService');
+const { makeVerificationCall: makeConnectCall } = require('../services/awsConnectService');
 
 exports.getTransactions = async (req, res) => {
   try {
@@ -27,6 +29,15 @@ exports.transfer = async (req, res) => {
 
     const senderAcc = await Account.findOne({ userId: req.userId });
     if (!senderAcc) return res.status(404).json({ message: 'Sender account not found.' });
+
+    // Block transfers from held accounts
+    if (senderAcc.isHeld) {
+      return res.status(403).json({
+        message: 'Your account is temporarily held for security review. Please contact admin.',
+        held: true,
+        heldReason: senderAcc.heldReason,
+      });
+    }
 
     if (senderAcc.balance < amount) {
       return res.status(400).json({ message: 'Insufficient balance.' });
@@ -110,7 +121,49 @@ exports.transfer = async (req, res) => {
       status: 'success',
     });
 
-    res.json({ message: 'Transfer successful.', transaction: txn, newBalance: senderAcc.balance });
+    // Post-transfer verification for amounts > ₹1,00,000
+    let verificationId = null;
+    if (amount >= 100000) {
+      try {
+        const senderPhone = senderUser?.phone || req.body.phoneNumber || '+917020542266';
+        const verification = await PostTransferVerification.create({
+          userId: req.userId,
+          transactionId: txn._id,
+          receiverAccount,
+          amount,
+          beneficiaryName: receiverUser?.name || receiverAccount,
+          phoneNumber: senderPhone,
+          status: 'pending',
+        });
+
+        // Trigger AWS Connect call (async — don't block response)
+        makeConnectCall(senderPhone, verification._id.toString(), {
+          amount,
+          receiverAccount,
+          beneficiaryName: receiverUser?.name || '',
+        }).then(async (callResult) => {
+          if (callResult.success) {
+            verification.status = 'calling';
+            verification.contactId = callResult.contactId;
+            await verification.save();
+            console.log(`[Post-Transfer Verify] Call initiated for ₹${amount} transfer, verificationId=${verification._id}`);
+          }
+        }).catch(err => console.error('[Post-Transfer Verify] Call error:', err.message));
+
+        verificationId = verification._id;
+      } catch (verifyErr) {
+        console.error('[Post-Transfer Verify] Error:', verifyErr.message);
+        // Don't fail the transfer if verification call fails
+      }
+    }
+
+    res.json({
+      message: 'Transfer successful.',
+      transaction: txn,
+      newBalance: senderAcc.balance,
+      verificationId, // null if < 1L, else the verification record ID
+      verificationRequired: amount >= 100000,
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server error.', error: error.message });
   }
@@ -133,6 +186,15 @@ exports.transferWithVoice = async (req, res) => {
 
     const senderAcc = await Account.findOne({ userId: req.userId });
     if (!senderAcc) return res.status(404).json({ message: 'Sender account not found.' });
+
+    // Block transfers from held accounts
+    if (senderAcc.isHeld) {
+      return res.status(403).json({
+        message: 'Your account is temporarily held for security review. Please contact admin.',
+        held: true,
+        heldReason: senderAcc.heldReason,
+      });
+    }
 
     if (senderAcc.balance < amount) {
       return res.status(400).json({ message: 'Insufficient balance.' });

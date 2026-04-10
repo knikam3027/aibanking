@@ -1,6 +1,6 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { FiHome, FiSend, FiList, FiMessageSquare, FiBell, FiDollarSign, FiTrendingUp, FiLogOut, FiMenu, FiX, FiUsers, FiShield, FiFileText } from 'react-icons/fi';
+import { FiHome, FiSend, FiList, FiMessageSquare, FiBell, FiDollarSign, FiTrendingUp, FiLogOut, FiMenu, FiX, FiUsers, FiShield, FiFileText, FiLock } from 'react-icons/fi';
 import { useState } from 'react';
 
 export default function Layout({ children }) {
@@ -31,6 +31,7 @@ export default function Layout({ children }) {
     { path: '/admin/users', icon: FiUsers, label: 'Manage Users' },
     { path: '/admin/payroll', icon: FiFileText, label: 'Salary Payroll' },
     { path: '/admin/withdraw', icon: FiDollarSign, label: 'Withdraw to Account' },
+    { path: '/admin/held-accounts', icon: FiLock, label: 'Held Accounts' },
     { path: '/chat', icon: FiMessageSquare, label: 'AI Chat' },
     { path: '/alerts', icon: FiBell, label: 'Alerts' },
   ];

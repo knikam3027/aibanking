@@ -1,0 +1,225 @@
+name: AI Banking Platform — CI/CD Pipeline
+# Builds, tests, scans, and deploys to AWS ECS Fargate
+# Uses Amazon Q Developer for security scanning
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-west-2
+  ENVIRONMENT: production
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ─── Stage 1: Lint & Unit Tests ─────────────────────────────
+  test-ai-service:
+    name: Test AI Service (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest tests/ -v --tb=short --junitxml=test-results.xml
+        env:
+          OPENAI_API_KEY: test-key
+          AWS_REGION: us-west-2
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-service-test-results
+          path: ai-service/test-results.xml
+
+  test-server:
+    name: Test Server (Node.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test-secret
+          MONGODB_URI: mongodb://localhost:27017/test
+
+  test-client:
+    name: Test Client (React)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+  # ─── Stage 2: Security Scanning (Amazon Q) ──────────────────
+  security-scan:
+    name: Amazon Q Security Scan
+    runs-on: ubuntu-latest
+    needs: [test-ai-service, test-server, test-client]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Amazon Q Developer Security Scan
+        uses: aws-actions/amazon-q-developer-scanning@v1
+        with:
+          scan-type: security
+          output-format: sarif
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+
+  # ─── Stage 3: Build & Push Docker Images ─────────────────────
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: [security-scan]
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        service:
+          - name: server
+            context: ./server
+            ecr-repo: production-banking-server
+          - name: ai-service
+            context: ./ai-service
+            ecr-repo: production-banking-ai
+          - name: client
+            context: ./client
+            ecr-repo: production-banking-client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.service.context }}
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ matrix.service.ecr-repo }}:latest
+            ${{ steps.ecr-login.outputs.registry }}/${{ matrix.service.ecr-repo }}:${{ github.sha }}
+
+  # ─── Stage 4: Deploy to ECS Fargate ──────────────────────────
+  deploy:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infrastructure/cloudformation.yaml \
+            --stack-name production-banking-platform \
+            --parameter-overrides \
+              EnvironmentName=production \
+              MongoDBUri=${{ secrets.MONGODB_URI }} \
+              JWTSecret=${{ secrets.JWT_SECRET }} \
+              OpenAIApiKey=${{ secrets.OPENAI_API_KEY }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Update ECS services
+        run: |
+          aws ecs update-service \
+            --cluster production-banking-cluster \
+            --service banking-ai-service \
+            --force-new-deployment
+
+          aws ecs update-service \
+            --cluster production-banking-cluster \
+            --service banking-server \
+            --force-new-deployment
+
+          aws ecs update-service \
+            --cluster production-banking-cluster \
+            --service banking-client \
+            --force-new-deployment
+
+      - name: Wait for deployment stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster production-banking-cluster \
+            --services banking-ai-service banking-server banking-client
+
+      - name: Verify agent health
+        run: |
+          ALB_URL=$(aws cloudformation describe-stacks \
+            --stack-name production-banking-platform \
+            --query "Stacks[0].Outputs[?OutputKey=='ALBURL'].OutputValue" \
+            --output text)
+          
+          echo "Checking agent health at ${ALB_URL}/ai/agents/health..."
+          curl -sf "${ALB_URL}/ai/agents/health" | python3 -m json.tool
